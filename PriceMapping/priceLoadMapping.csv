@@ -1,0 +1,28 @@
+index;filename;type
+EEX DEB Y1;DEBY1;forward
+EEX DEB Y2;DEBY2;forward
+EEX DEB Y3;DEBY3;forward
+EEX DEP Y1;DEPY1;forward
+EEX DEP Y2;DEPY2;forward
+EEX DEP Y3;DEPY3;forward
+PEGAS THE Y1;THEY1;forward
+PEGAS THE Y2;THEY2;forward
+PEGAS THE Y3;THEY3;forward
+138;DEBSpot;spot base
+138;DEPSpot;spot peak
+137;ATBSpot;spot base
+137;ATPSpot;spot peak
+EEX DEB Q1;DEBQ1;forward
+EEX DEB Q2;DEBQ2;forward
+EEX DEB Q3;DEBQ3;forward
+EEX DEB Q4;DEBQ4;forward
+EEX DEB Q5;DEBQ5;forward
+EEX DEB Q6;DEBQ6;forward
+EEX DEB Q7;DEBQ7;forward
+EEX DEP Q1;DEPQ1;forward
+EEX DEP Q2;DEPQ2;forward
+EEX DEP Q3;DEPQ3;forward
+EEX DEP Q4;DEPQ4;forward
+EEX DEP Q5;DEPQ5;forward
+EEX DEP Q6;DEPQ6;forward
+EEX DEP Q7;DEPQ7;forward

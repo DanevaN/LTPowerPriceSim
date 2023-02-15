@@ -1,0 +1,823 @@
+---
+title: 'Long Term Simulation of Electricity Prices: spot, calendar and quarterly products'
+author: "Nadia Daneva"
+number_sections: yes
+output:
+  html_document:
+    df_print: paged
+    code_folding: hide
+  pdf_document: default
+  html_notebook: default
+email: nadia.daneva@kelag.at
+---
+
+```{r message=FALSE, echo = FALSE}
+# source functions we will need to visualize data and libraries
+v.functions <- list.files("./Functions/",pattern = "(.*)\\.R$" )
+lapply(v.functions,function(x){source(paste0("./Functions/",x))})
+
+outputPath<- "./Output/"
+valDate <- 20201101
+paramsFile <- list.files(outputPath,
+                          pattern = paste0("(.*)",valDate,"_params\\.RDA$" ))
+# load all paraemters used in the simulation
+base::load(paste0(outputPath, paramsFile))
+
+# assign some of the used parameters to variables
+valDateDt <- l.params$valDateDt
+valDate <- as.integer(paste0(substr(valDateDt, 1,4), substr(valDateDt, 6,7), substr(valDateDt, 9, 10)))
+simYears <- l.params$simYears
+simPathLength <- l.params$simPathLength
+simIter <- l.params$v.simIter[1]
+v.indicesQ <- l.params$v.indicesQ
+v.indicesCal <- l.params$v.indicesCal
+v.indicesSpot <-l.params$v.indicesSpot
+priceDataPath <- l.params$priceDataPath
+#simulated prices first chunk for visualization
+outputPathSim <-paste0(l.params$outputPathSim,1,".RDA")
+#################
+# calculate days until each calendar year end
+ # calculate on which time index ends year a+1:simYears
+  # save as a1Days, a2Days etc.
+
+  for (j in (0:simYears)){
+    assign(paste0("a", j, "Days"), as.numeric(as.Date(paste0("31.12.", as.numeric(substr(valDateDt, 1, 4)) + j), 
+                                                      "%d.%m.%Y") - valDateDt)
+    )
+  }
+################
+# print information about the vizualization
+dt.info <- data.table::data.table("Valuation Date:" = as.character(valDateDt),
+                        "File containing presimulated prices:" = outputPathSim
+                        )
+dt.infoT <- data.table::transpose(dt.info)
+data.table::setcolorder(dt.infoT[, Wert := colnames(dt.info)], c(2,1))
+
+colnames(dt.infoT) <- c(" ", "  ")
+knitr::kable(dt.infoT)
+```
+# Introduction and motivation
+The electricity price simulation presented in this notebook includes the following products:  
+* spot prices  
+* forward calendar products  
+* forward quarterly products  
+These three tpes have their pecularieties and will be described separately in detail.  
+  
+The simulation effort presented here is motivated by **risk manegemtnt** and **not by trading**. This distinction is important as in trading timing is of crucial importance and timing is not considered here.   
+   
+**Purpose of this simulation is**:  
+* reproduce the long term distributional properties of different electricity products  
+* generate these long term distributions via plausible simulation paths  
+* do all of the above preserving the dependance structure between the different products.  
+  
+This means that in essence the aim is to produce a multidimensional non normal stchastic process which is close enough to the empirical distributonal properties of the marginal distributions of each product, has plausible time dynamics and preserves interdependancies. This task may seem daunting, but it is shown that with a combination of a few parameteric stochastic processes and some common sense the task is solved in a very satisfying way.  
+  
+# Properties of electricity price products  
+  
+To illustrate some of the properties of the prices which will be modeled a data set is needed. As an example here historical prices are loaded and densities are plotted. The data set covers EEX German electricity products 01.01.2011 to 01.11.2020  
+```{r echo = FALSE}
+# load historical price data
+base::load(paste0(priceDataPath, "priceData.rda"))
+
+head(dt.priceData)
+```
+Now plot front calendar product and spot:
+```{r echo = FALSE}
+
+idx1 <- which(colnames(dt.priceData) == "DEBY1")
+idx2 <- which(colnames(dt.priceData) == "DEBSpot")
+df.hist <- data.frame(sample =  c(dt.priceData[[idx1]],dt.priceData[[idx2]]), 
+                      label = c(rep(colnames(dt.priceData)[idx1], dt.priceData[, .N]),rep(colnames(dt.priceData)[idx2], dt.priceData[, .N]))
+)
+ggplot(df.hist , aes(x = sample, fill = label)) + geom_density(alpha=0.2, position="identity") + ggtitle("Density of historical prices")
+```
+**The first observation is that prices are bimodal**. Even spot prices show some bimodality. But even over such a long history the overall volatility is not enormous.  
+  
+Here are plotted the prices over time:  
+**Forward Calendar Prices**  
+```{r echo = FALSE}
+# melt them and plot
+v.calCols <- c("Date", colnames(dt.priceData)[grepl("Y", colnames(dt.priceData))])
+a<-data.table::melt.data.table(dt.priceData[, ..v.calCols], id = "Date")
+ggplot(a, aes(x = Date, y=value, color = variable))+
+  geom_line() +
+  ggtitle("Historical Forward Price Observations") +
+  xlab("Date") +
+  ylab("Historical price EUR/MWh")
+
+```
+**Spot Prices**  
+```{r echo = FALSE}
+v.spotCols <- c("Date", colnames(dt.priceData)[grepl("Spot", colnames(dt.priceData))])
+a<-data.table::melt.data.table(dt.priceData[, ..v.spotCols], id = "Date")
+ggplot(a, aes(x = Date, y=value, color = variable))+
+  geom_line() +
+  ggtitle("Historical Spot Price Observations") +
+  xlab("Date") +
+  ylab("Historical price EUR/MWh")
+```
+**All together**   
+```{r echo = FALSE}
+v.allCols <- c("Date", colnames(dt.priceData)[grepl("Y", colnames(dt.priceData))], 
+               colnames(dt.priceData)[grepl("Spot", colnames(dt.priceData))])
+a<-data.table::melt.data.table(dt.priceData[, ..v.allCols], id = "Date")
+ggplot(a, aes(x = Date, y=value, color = variable))+
+  geom_line() +
+  ggtitle("Historical Spot Price vs. Forward Price Observations") +
+  xlab("Date") +
+  ylab("Historical price EUR/MWh")
+```
+
+**The historical charts show that:**  
+* both forward and spot prices have clusters of volatility  
+* spot prices are much more volatile than forwards  
+* both markets are nevermind correlated whereby correlations within the forward market and within the spot market are stronger than between the two markets  
+
+# Modelling Approach Calendar and Spot Products  
+We now aim to find a sensible approach to reproduce the following observed properties:  
+**Properties**    
+* Bimodality   
+* Contained long term volatility  
+* Volatility clustering  
+* Interdepandece  
+
+Bimodality points us immediately into the direction of regime switching. The overall distributional picture seems like a mixture of two distributions. The easiest parametric approach to this task is the Hidden Markov Model. Here we just define the model for further reading we recommend e.g. https://web.stanford.edu/~jurafsky/slp3/A.pdf   
+The Hidden Markov Model is characterized by a hidden (not observed) Markov chain which generates a sequence of the regimes (states) of the process. Conditional on the state in each time step there is an emission probabilty distribution generating the observable variable. The model is discrete in time and continious in the emission, but with an appropriate time step it could be used for price sequencies (e.g. one day).  
+   
+We define the state variables as $Z_t$. They are descrete random states following a Markov chain, which means that the transition to the new state is only determined by the current state at time $t$ by the following property:  
+$P(Z_{t+1} \mid Z_1, ... , Z_t) = P(Z_{t+1} \mid Z_t)$  
+  
+Let ${z_1, z_2, z_3, ..., z_n}$ be a realization of the Markov chain. Conditioned on what was realized at each time step $t$ the process generates an observation $x_t$ which is a realization of a random variable $X_t$ following a predefined emission distribution. The parameters of the emission distribution are a function of the state $z_t$. For the basic HMM the emission distribution is normal:  
+$X_t\mid z_t$ ~ $N(\mu_{z_t},\sigma^2_{z_t})$  
+  
+Learning the HMM means learning a transition matrix $Q$ which generates the Markov chain and a set of mu's and sigma's, one pair for each possible state of the Markov chain (regime). Depending on the realized state the emissions follow a normal distribution with the corresponding pair of parameters.   
+This model can be learnt by Baum Welch algorithm for finding the maximum likelihood estimators of the parameters. For our purposes we will also need to infer the most likely sequence of states which generated the observations. This task is solved efficiently by Viterbi algorithm (https://en.wikipedia.org/wiki/Hidden_Markov_model).  
+In order to get a feeling about what HMM can do we have calibrated an HMM with 2 states and normal emissions to a time series of DEBY1 quotes (German front year electricity product).  
+A typical path of a Hidden Markov Model could look like this:  
+```{r echo = FALSE}
+library(png)
+img <- readPNG("./Simulated_Prices_Pure_HMM.png")
+grid::grid.raster(img)
+```
+Unfortunately these paths do not look at all like the true observed price paths. The jumps happen instantaniously.   
+Now let's look at the distribution of the simulated prices compared to the distribution of the empirical observasions:    
+```{r echo = FALSE}
+# df.hist <- data.frame(sample =  c(dt.priceData[["DEBY1"]],
+#                                   as.numeric(dt.Y1[759, -2001])), 
+#                       label = c(rep("DEBY1", dt.priceData[, .N]),
+#                                 rep("DEBY1 Sim", dim(dt.Y1)[2] - 1))
+# )
+# ggplot(df.hist , aes(x = sample, fill = label)) + geom_density(alpha=0.2, position="identity") + ggtitle("End Distribution of DEBY1 from HMM vs. historical distribution")
+```
+!(./Simulated_Prices_Pure_HMM.png)
+The final marginal dirstribution over all simulated paths has the desired bimodality, but the upper tail is overestimated.
+**Conclusion**  
+1. HMM can produce price distributions which are satisfactory as it captures the bimodality well  
+2. The paths generated by HMM look very implausible as the jumps between the two states happen immadiately and there is no gradual growth in the prices or fall in the prices as observed in the real data  
+3. We need some mechanism to reproduce the gradual adaptation of the prices to the new regime after a regime switch was produced by HMM. the following chapter gives the proposed solution  
+  
+# Ornstein Uhlenbeck Process (Mean Reversion Process)  
+  
+Ornstein-Uhlenbeck process (OU) can be loosely described as a Wiener process where the drift has been modified so that the process is always "pulled" to a long term level (a long term mean), let's call it $\bar{\mu}$.  
+  
+Let's call the the process $X_t$ then what we want is the next move of the process to be towards the long term level, i.e.:  
+if $X_t$ > $\bar{\mu}$ then move down proportional to the difference between the two $(\bar{\mu} - X_t)$  
+if $X_t$ < $\bar{\mu}$ then move up proportional to the difference between the two $(\bar{\mu} - X_t)$  
+This is the idea behind the drift of Ornstein-Uhlenbeck process which is:  
+$\theta(\bar{\mu} - X_t)dt$  
+The meaning of $\theta$ is to give the "size" of the steps the process will take towards the long term mean. A $\theta$ of $\frac{1}{n}$ will mean that the process needs on average $n$ time steps of length $dt$ in order to achieve the long term mean $\bar{\mu}$.  
+  
+The equation of Ornstein-Uhlenbeck is therefore:  
+$dX_t=\theta(\bar{\mu} - X_t)dt+\varsigma dB_t$  
+Where $\left(B_t\right)_{t>=0}$ is a standard Brownian motion.  
+  
+For the standard OU process we have  
+$VAR(X_t)=\frac{\varsigma^2}{2\theta}\left(1-e^{-2\theta t)}\right)$  
+We let $t \to \infty$ and get  
+$VAR(X_{\infty})=\frac{\varsigma^2}{2\theta}$   
+This is the expression for long term variance of the OU process  
+  
+We now modulate the Ornstein-Uhlenbeck (OU) process with the Markov chain we learnt in HMM.  
+
+***
+
+*Note: Terminology*
+In the technical literature the combination of a markov chain and Ornstein-Uhlenbeck process is called Markov Modulated Ornstein Uhlenbeck (MMOU). In finance having a latent states is referred to as regime switching, so the term would be Regime Switching Ornstein Uhlenbeck, but it is not found in standard finance literature.  
+
+***
+   
+The modulation means that the Mrkov chain determines which set of parameters to use for the Ornstein Uhlenbeck process:  
+   
+$dX_{Z_t}=\theta(\bar{\mu_{Z_t}} - X_t)dt+\varsigma_{Z_t} dB_t$  
+   
+Note that we do not modulate the mean reversion speed $\theta$ only the long term mean $\bar{\mu}$ and the volatility $\varsigma$.  
+It is no accident that we used the script sigma $\varsigma$ to represent the volatility parameter. We would like to distinguish it from the standard deviation parameter in the normal distribution of the emissions in the HMM.  
+  
+***
+
+*Note: Voltility of Ornstein Uhlenbeck vs. standard deviation in emissions*
+Practically we would like to use the learnt mean and standard deviation parameters from HMM for the OU processes which we will use to generate emissions conditioned of the state of the Markov chain.  
+In both cases the mean and the long term mean refer to the level of $X_t$ and are measured in the units of $X_t$. However the standard deviation of the normal emissions $\sigma$ refers to standard deviation of $X_t$ whereas $\varsigma$ refers to the standard defiation of the *change* in the level $dX_t$. Both have the same units as $X_t$ but quite different meaning.  
+
+***
+  
+We now need to derive the parameters for the OU processes for each regime from the parameters we learnt in HMM. We apply the following euristics based on the results for the variance of Ornstein Uhlenbeck process in relation to the volatility parameter $\varsigma$ to obtain the paramters for the OU processes from the parameters learnt by HMM.  
+Let $(\mu_{Z_t}, \sigma^2_{Z_t})$ be the parameters learnt fo rthe emission probabilities in the HMM model.
+The parameters $(\bar{\mu}_{Z_t}, \varsigma^2_{Z_t})$ of the corresponding OU processes are obtained as:  
+1. We set the conditional long term mean for each OU process to be $\bar{\mu}_{Z_t}:=\mu_{Z_t}$   
+2. We set the conditional long term variance for each OU process to be    $\varsigma^2_{Z_t}:=2\theta\sigma_{Z_t}^2$
+  
+# Simulating a one dimensional MMOU  
+We now have all the necessary tools to simulate an one dimensional MMOU. Let us define a simple algorithm for simulating MMOU with 2 states. Let $n$ be the number of observations in the data set. We set $\Delta t := 1$, i.e. untary time steps. If data set was daily this means a time step of one day.  
+   
+**Simplified Algorithm For One Product**  
+   
+Let $r$ be the number of observations in our dataset, $m$ be the number of time steps to simulate and $n$ be the number of simulation paths.   
+1. Infer HMM from the observations and obtain:  
+* transition matrix $Q$  
+* parameter pairs for each state $\{\mu_s, \sigma^2_s\}_{s=1,2}$  
+* a Viterbi sequence $\{z^*_1...z^*_{r}\}$ i.e. the most probable hidden state sequence which generated the data  
+* the stationary distribution $\pi := \begin{pmatrix}Q^*(1,1) &   Q^*(1,2)\end{pmatrix}$ where $Q^* = lim_{t \to \infty}Q^t$, i.e. the matrix which we get if we multiply $Q$ with itself infinitely many times  
+2. Start simulation  
+* start with the last observation in the data set, i.e. $X_0 = P_{r}$, where $P_{r}$ is the last observed price  
+* draw an initial state $z_0 \in \{1,2\}$ from $\pi$  
+The general approach (applies to all number of states) is to take the cumulative sum of the elements of the vector
+$\pi^{cum}:=\begin{pmatrix}\pi_1 & \pi_1 + \pi_2 \end{pmatrix}$, then take $u \sim U(0,1)$ and return the maximum index of the last element of $\pi^*$ which is bigger than $u$ 
+3. Iterate over $i \in (1,...,m)$   
+* draw a new state $z_{i+1}$ from  
+$Q = \begin{pmatrix}q11 & q12\\ q21 & q22\end{pmatrix}$  
+This means take the row corresponding to the current state $q_{z_i}:= \begin{pmatrix}q_{z_i1} & q_{z_i2} \end{pmatrix}$ 
+where $q_{z_i1}$ is the probability that if you are in state $z_t$ you will transition into state 1.
+Draw the new state. The general approach is to take the cumulative sum of the elements of the vector.
+$q^{cum}_{z_i}:=\begin{pmatrix}q_{z_i1} & q_{z_i1} + q_{z_i2} \end{pmatrix}$ then take $u \sim U(0,1)$ and return the maximum index of the last element of $q^{cum}_{z_i}$ which is bigger than $u$  
+* draw $\epsilon$ from standard normal distribution  
+* simulate $X_{i+1}= \theta(\bar{\mu}_{z_i} - X_i) + \varsigma_{z_i} * \epsilon$  
+* repeat step 3 $n$ times to obtain $n$ simulation paths
+   
+# Representing Dependancies in prices  
+   
+Intuitively if we have low price and high price regime the regime would be for all prices in the particular market area. It is somehow not logical to have quarterly products being in low price regime and annual ones being in high price regime. This means that the state sequence (regimes) we learn from the HMM are correlated among the different products. We would like to preserve this correlation during simulation.  
+On top of this one would expect from visually inspecting the time series that a price move upwards will be seen across all products. We would not like to have a path where DEBY1 goes up one day and on the same day DEBY2 goes down in completely independant manner although the level of both is similar (which we make sure happens through correlating the regime switching state sequence we generate). This means that the white noise components of the different Ornstein Uhlenbeck processes for the products has to be correlated as well.  
+In short we reproduce dependancy structures via:  
+1. Correlating the simulated state sequences of the different products. This means that we draw the sequence $z$ using a correlated uniform sample   
+2. Correlating the white noise components in the OU processes for the different products. This means that we draw the simulated prices using a correlated standard normal sample  
+   
+In more detail the algorithm described above changes as follows:   
+  
+**Algorithm 2**   
+   
+Let $d$ be a prodcut index from some fproduct set $D$, we use the same letter to denote the cardinality of the set. 
+Let $m$ be the simulation horizon, i.e. how many steps in the future we want to simulate.
+Let $n$ be the number of simulations.  
+1. For each $d \in D$:  
+Infer HMM from the observations and obtain:  
+* transition matrix $Q^d$  
+* parameter pairs for each state $\{\mu^d_i, (\sigma^d)^2_i\}_{i=1,2}$   
+* a Viterbi sequence $z^{d*}:=\{z^{d*}_1...z^{d*}_m\}$ i.e. the most probable hidden state sequence which generated the data   
+* the stationary distribution $\pi^d := \begin{pmatrix}Q^{d*}(1,1) &   Q^{d*}(1,2)\end{pmatrix}$ where $Q^{d*} = lim_{t \to \infty}(Q^d)^t$, i.e. the matrix which we get if we multiply $Q$ with itself infinitely many times  
+End loop over d.  
+2. Calculate two correlation matrices with dimension $D$:  
+$\rho_z := corr(z^{1*}, z^{2*}, ..., z^{D*})$  
+$\rho_x := corr(P^1,P^2,...,P^D)$  
+3. Generate correlated random matrices:  
+$U$ from uniform (0,1) using $\rho_z$  
+$N$ from standard normal using $\rho_x$  
+Dimensions are $m \times D$. This means that for each product in $D$ we have a $m$ vector corresponding to one simulation path.   
+4. Generate one simulation path. For each $d \in (1,...,D)$ and each $i \in (1,...,m)$ iterate:  
+4.1. start with the last observation in the data set, i.e. $X^d_{01} = P^d_{last}$  
+4.2. draw an initial state $z^d_0 \in \{1,2\}$ from $\pi^d$  
+The general approach (applies to all number of states) is to take the cumulative sum of the elements of the vector  
+$\pi^{d,cum}:=\begin{pmatrix}\pi^d_1 & \pi^d_1 + \pi^d_2 \end{pmatrix}$,  
+then take $u \sim U(0,1)$ and return the maximum index of the last element of $\pi^*$ which is bigger than $u$  
+4.3. draw a new state from z^d_{i+1}  
+$Q^d = \begin{pmatrix}q^d_{11} & q^d_{12}\\ q^d_{21} & q^d_{22}\end{pmatrix}$  
+We know the value of $z^d_i$, in our case it is 1 or 2. We take the row from the transition matrix $Q^d$ corresponding to the current state $q^d_{z^d_i}:= \begin{pmatrix}q^d_{z^d_i1} & q_{z^d_i2} \end{pmatrix}$  
+where $q^d_{z^d_i1}$ is the probability that if you are in state $z^d_i$ you will transition into state 1.  
+Draw the new state. The general approach is to take the cumulative sum of the elements of the vector  
+$q^{d, cum}_{z^d_i}:=\begin{pmatrix}q^d_{z^d_i1} & q^d_{z^d_i1} + q^d_{z^d_i2} \end{pmatrix}$.  
+Now take the element from the correlated random unifrom matrix $U$ this simulation time step $i$ and this product $d$ $u := U(i,d)$ and return the maximum index of the last element of $q^d_{z^d_i}$ which is bigger than $u$. Assign the index to $z^d_{i+1}$.    
+4.4. Next take the element from the correlated standard normal random matrix $N$ $\epsilon= N(i,d)$ corresponding to this simulation time step $i$ and this product $d$  
+4.5. simulate $X^d_{i+1}= \theta(\bar{\mu}^d_{z^d_i} - X^d_i) + \varsigma^d_{z^d_i} * \epsilon$  
+5. repeat steps 3. and 4. $n$ times to obtain $n$ simulation paths  
+   
+***
+
+*Note: Vectorization*
+In the R implementation of the above algorithm step 3. (generating random correlated unifrom and normal numbers) is vectorized over $n$ and $d$ but iterated over $m$ due to the restriction of MultiRNG package which is used. Step 4 is vectorized over $n$ only. It can be vectorized over $d$ as well, but it is recursive over $m$. We did not vectorize over $d$ in order to preserve some readablitity of the code as the dimension $d$ is not big - in the order of 10. 
+
+***
+   
+**Results for spot and calendar products**  
+We present the results in terms of visualizations:  
+* of the densities of simulated variables vs. empirical observations  
+* of the simulated paths  
+
+***
+
+***Note: Theta***
+Theta is a hyperparameter in our implementation. Intuitively we want to keep it equal for all time series, although spot prices may obay a completely different dynamics. For these experiments we set $\theta$ to be equal everywhere. It is worth experimenting with different $\theta$ for spot prices, as our experiments show that we underestimate the volatility there.   
+
+***
+```{r echo = FALSE}
+# let's load the results from test simulations
+
+m.theta <- l.params$m.theta
+print(paste("All Simulations presented here were calculated with theta =", m.theta[1, 1]))
+```
+  
+####################
+```{r echo = FALSE, fig.height = 12.5, fig.width = 8}
+load(outputPathSim)
+
+
+l.g <- PlotPriceDistribution (stepPlot =  a0Days,
+                              dt.priceData = dt.priceData, 
+                              ar.sim = ar.sim)
+
+do.call(gridExtra::grid.arrange, c(l.g, 
+                                   ncol=2,
+                                   nrow = round((length(l.g) + 1) / 2),
+                                   top = paste("Histogram of simulated prices at day",
+                                               a0Days ))
+         )
+```
+```{r echo = FALSE, fig.height = 12.5, fig.width = 8}
+l.g <- PlotPriceDistribution (stepPlot =  a1Days,
+                              dt.priceData = dt.priceData, 
+                              ar.sim = ar.sim)
+
+do.call(gridExtra::grid.arrange, c(l.g, 
+                                   ncol=2,
+                                   nrow = round((length(l.g) + 1) / 2),
+                                   top =paste("Histogram of simulated prices at day",
+                                              a1Days ))
+         )
+```
+```{r echo = FALSE, fig.height = 12.5, fig.width = 8}
+l.g <- PlotPriceDistribution (stepPlot =  simPathLength,
+                              dt.priceData = dt.priceData, 
+                              ar.sim = ar.sim)
+do.call(gridExtra::grid.arrange, c(l.g, 
+                                   ncol=2,
+                                   nrow = round((length(l.g) + 1) / 2),
+                                   top = paste("Histogram of simulated prices at day",
+                                               simPathLength ))
+         )
+
+```
+
+```{r echo = FALSE}
+cut <- 1
+idx1 <- which(v.names == "DEBY1")
+idx2 <- which(v.names == "DEBY2")
+idx3 <- which(v.names == "DEBY1")
+idx4 <- which(v.names == "DEBY2")
+simPathLength <- dim(ar.sim)[1]
+df.path <- data.frame(step = seq(1:simPathLength),
+                      sample =  c(ar.sim[,1:cut, idx1], 
+                                  ar.sim[,1:cut, idx2],
+                                  ar.sim[,1:cut, idx3],
+                                  ar.sim[,1:cut, idx4]), 
+                      label = c(rep(v.names[idx1], simPathLength), 
+                                rep(v.names[idx2], simPathLength),
+                                rep(v.names[idx3], simPathLength),
+                                rep(v.names[idx4], simPathLength))
+)
+
+ggplot(df.path, aes(x = step,y=sample, color = label))+
+  geom_line(show.legend = TRUE) +
+  ggtitle("Simulation paths for some products") +
+  xlab("simulated time steps") +
+  ylab("Simulated price EUR/MWh")
+```
+We see that spot prices do exhibit a bit higher volatility but much less as in the real data.  
+In order to see if we underestimate the volatility of spot or overestimate the volatility of the other products we plot one simulation path vs. the true history for front year forward and spot in base load.   
+  
+```{r echo = FALSE}
+cut <- 50
+idx1 <- which(v.names == "DEBY1")
+sampleSize <- dt.priceData[, .N]
+simPathLength <- dim(ar.sim)[1]
+# we plot one simulation path and the real history together
+# we take the minimum from the two
+xLength <- min(sampleSize, simPathLength)
+df.path <- data.frame(step = c(seq(1:xLength), seq(1:xLength)),
+                      sample =  c(ar.sim[1:xLength, cut, idx1], dt.priceData$DEBY1[(sampleSize - xLength + 1):sampleSize]), 
+                      label = c(rep("Sim DEBY1", xLength), 
+                                rep("Hostory DEBY1", xLength))
+)
+
+ggplot(df.path, aes(x = step,y=sample, color = label))+
+  geom_line(show.legend = TRUE) +
+  ggtitle("One Simulation path vs. History") +
+  xlab("simulated time steps") +
+  ylab("Simulated price EUR/MWh")
+```
+   
+Plot one simulation path vs. history for spot   
+
+```{r echo = FALSE}
+cut <- 1
+idx1 <- which(v.names == "DEBSpot")
+sampleSize <- dt.priceData[, .N]
+simPathLength <- dim(ar.sim)[1]
+# we plot one simulation path and the real history together
+# we take the minimum from the two
+xLength <- min(sampleSize, simPathLength)
+df.path <- data.frame(step = c(seq(1:xLength), seq(1:xLength)),
+                      sample =  c(ar.sim[1:xLength, 1:cut, idx1], dt.priceData$DEBSpot[1:xLength]), 
+                      label = c(rep("Sim DEBSpot", xLength), 
+                                rep("Hostory DEBSpot", xLength))
+)
+
+ggplot(df.path, aes(x = step,y=sample, color = label))+
+  geom_line(show.legend = TRUE) +
+  ggtitle("One Simulation path vs. History") +
+  xlab("simulated time steps") +
+  ylab("Simulated price EUR/MWh")
+```
+   
+   We see that we rather underestimate the volatility of spot and the forward product have *very realistic paths*.   
+# Experimenting with homogenious Markov switching AR
+In essence the discrete version of Ornstein Uhlenbeck process is very close to an auto regressive process (AR process). So the Markov switching AR is very similar to what we present here as an idea. In our euristic model we can have the different prices being in different states where the state sequences for each proce path are simulated in a correlated manner. 
+The difference between our approach and the Markov switching AR is that in the latter a single state switching HMM controls the parameters of the AR processes and that the calibration procedure tries to infer all of the parameters together. In R there is a package NHMSAR (https://cran.r-project.org/web/packages/NHMSAR/NHMSAR.pdf) 
+It uses expectation maximization (EM) to calibrate all of the parameters at once.
+We have used it to calibrate a simpler version of the model (only two products and homogenious) and compare the simulation paths.
+```{r echo = FALSE}
+library(NHMSAR)
+v.fileNames <- c("./PriceData20201101/DEBY1.csv",
+                             "./PriceData20201101/DEBY2.csv")
+
+# take only particular indices, load historical data for them and presimulated MMOU prices for them
+v.idx <- c("DEBY1", "DEBY2")
+ar.simPrices1 <- ar.simPrices[,,dimnames(ar.simPrices)[[3]] %in% v.idx]
+# create a list of all csv files and convert them to data.table
+l.tmp <- lapply(v.fileNames , read.csv2)
+names(l.tmp) <- v.idx
+l.tmp <- lapply(l.tmp, data.table)
+l.tmp <- lapply(l.tmp, setkey, Date)
+# manipulate some of the columns to make them useful and set key to all list members
+l.tmp <- lapply( l.tmp, 
+                 function(dt.x) dt.x[, ':=' ( Date= as.Date(as.character(Date), format="%d.%m.%Y"),
+                                              ContractYear = as.integer(substr(ContractName, stringr::str_count(ContractName)- 3, stringr::str_count(ContractName)))
+                 )])
+dt.y <- Reduce(function(dt.x, dt.y){merge(dt.x,dt.y, by = "Date",  nomatch = FALSE)},
+       l.tmp)[, .SD, .SDcols = patterns('^[Settlement]')]
+historyLength <- dt.y[, .N]
+colnames(dt.y) <- v.idx
+# prepare data for AR HMM
+y <- as.matrix(dt.y)                  
+## external code AR HMM calibration example #####################
+data = array(y,c(historyLength,1,2))
+# = 40
+T = dim(data)[1]
+N.samples = dim(data)[2]
+d = dim(data)[3]
+M = 2
+order = 2
+theta.init = init.theta.MSAR(data, M=M, order=order, label="HH")
+mod.hh = fit.MSAR(data,theta.init, verbose=TRUE, MaxIter = 500)
+regimes.plot.MSAR(mod.hh,data, ylab="prices")
+Y0 = array(data[1:2,sample(1:dim(data)[2],1),],c(2,1,1))
+N.samples = 1000
+Y.sim = simule.nh.MSAR(mod.hh$theta, Y0 = Y0, T, N.samples = N.samples)
+dt.simARHMM <- data.table(simDEBY1 = Y.sim$Y[100,,1],
+                          simDEBY2 = Y.sim$Y[100,,2],
+                          historyDEBY1 = dt.y$DEBY1[(historyLength - N.samples + 1):historyLength],
+                          historyDEBY2 = dt.y$DEBY2[(historyLength - N.samples + 1):historyLength],
+                          steps = 1:length(Y.sim$Y[100,,1]))
+dt.g <- melt.data.table(dt.simARHMM, id.vars = "steps")
+dt.g[, variable := as.character(variable)]
+ggplot(dt.g, aes(x = steps, y=value, color = variable))+
+  geom_line() +
+  ggtitle("One path of AR HMM simulated proces for DEBY1 and DEBY2") +
+  xlab("Steps") +
+  ylab("Simulated price EUR/MWh")
+#hist(Y.sim$Y[100,,1])
+```
+We see that the dynamics learnt via the standard EM for Markov switching AR leads to very unrealistic price paths. The EM algorithm attributes a bigger portion of the total variance to the AR process instead of the switching of states. 
+
+# Quarter Forward Products  
+  
+Quarter Forward products are different than calendar products in several aspects:  
+* Seasonality: electricity production and usage is strongly dependant on wheather conditions, in four season regions as Europe it is natural to expect different prices in winter, summer etc  
+* Arbitrage considerations: buying 1 unit of 4 quarter products spanning the year is equivalent to buying 1/4 unit of a calendar product for the same year. At any one trading date the average of the spreads of the 4 quarter products to the calendar one is expected to be zero.  
+   
+The above points mean that if we are to try and simulate the quarter products following the same logic as with the calendar ones in any one simulation paths we will produce arbitrage prices, as correlations alone can only insure that *overall* on average prices will loosely mimic their behaviour, but not at any particular point in time or on any particular iteration.  
+Instead, it makes sense to put our domain knowledge into the modelling exercise, to realize that the true risk factor behind the quarter product prices is the annual level and the seasonality spread **which are not necessarily independant from each other**. This means that the only additional information to the calendar products these quarter prices contain is the seasonality profile for the delivery year which the market expects.  
+Therefore we have to additionally model the spreads only. In addition we realize that we only deal with a rank 3 information (covariance matrix) as one of the spreads can be expressed as linear combination of the other 3 due to the no arbitrage condition.  
+In addition we need prices for third and fourth quarter of current year. For these quarters we cannot calculate the spreads to the calendar product because this is not traded anymore during the delivery year. We decided to calculate the spreads to the front year calendar product. The justification for this decision can be seen on the chart below which shows very high correlation between these products.   
+```{r echo = FALSE}
+
+dt.priceDataBQIII <- l.priceDataQAll$dt.priceDataBQIII[lubridate::year(Date) == ContractYear,]
+dt.priceDataBQIV <- l.priceDataQAll$dt.priceDataBQIV[lubridate::year(Date) == ContractYear,]
+dt.DEBY1 <- dt.priceData[, c("Date", "DEBY1")]
+
+b<-data.frame( Date = c(dt.priceDataBQIII$Date, dt.priceDataBQIV$Date, dt.DEBY1$Date),
+               value = c(dt.priceDataBQIII$Settlement, dt.priceDataBQIV$Settlement, dt.DEBY1$DEBY1),
+               label = c(rep("BQIII", dt.priceDataBQIII[,.N]),
+                         rep("BQIV", dt.priceDataBQIV[,.N]),
+                         rep("DEBY1", dt.DEBY1[, .N]))
+)
+ggplot(b, aes(x = Date, y=value, color = label))+
+  geom_line() +
+  ggtitle(" Historical Forward Price Observations QIII and QIV of current year \n and front calendar product, base load") +
+  xlab("Date") +
+  ylab("Historical price EUR/MWh")
+
+```
+
+  
+**Modeling Approach for Quarter Forwards**  
+* model spreads of quarter products to calendar ones   
+* model 3 spreads and deduce the fourth  
+* model quarters III and IV of current year where no calendar product for the same year is traded anymore as spreads to the front calendar product. I.e. QIII 2019 to cal 2020.  
+* deduce prices for:  
+-- Y0 QIII and Y0 QIV which are third and fourth quarter of current year,  
+-- Y1 QI, Y1 QII, Y1 QIII and Y1 QIV which are all quarters of next year,
+-- Y2 QI, Y2 QII, Y2 QIII and Y2 QIV which are all quarters of next year,
+-- Y3 QI, Y3 QII, Y3 QIII and Y3 QIV which are all quarters of next year.  
+
+
+***
+
+*Note: Calculating quarter spreads and notation*  
+In order to calculate the spreads for every trade date (observation date) the calendar prices have to be matched to quarter prices referring to the same delivery year.  
+For modeling the quarters of the current year (i.e. the year of the respective trade date) we calculate spreads with respect to the front calendar product which has year = year(quarter product) + 1.  
+For notational clarity we use QI, QII, QIII, QIV to refer to the calendar quarters. QI always starts on 1.01. and ends on 01.04., etc. We use big B to indicate base load and big P to indicate peak load:   
++ SpreadPQII stands for the spread for peak load, quarter starting on 01.04. to calendar product of the same year   
++ in contrast to distinguish quarters of current year where spreads are calculated with respect to the front year we use Spread0PQIII   
+The notation Q1, Q2, ... Q7 is preserved to the relative tenor quarter products (analogous to calendar ones). Q1 will refer to the quarter which starts right after trade date, Q2 to the quarter starting after Q1. If trade date is 15.02. Q1 will be 01.04. - 01.10., Q2 will be 01.10.-01.01. etc.   
+To this end the time series for the quarter products are manipulated in the following manner:   
+1. Download Q1 to Q7 for each trade date.   
+2. Group time series of quarter products according to the calender quarter they refer to QI, QII, QIII, QIV.   
+3. Join to calendar time series on trade date and year(delivery quarter product) = year(delivery calendar product) and calculate spreads.   
+4. Eliminate double quotes. If for a particular trading date we have two quotations for a quarter product and calendar product (e.g. of next year and year after next) we keep only the most recent delivery year.   
+In addition we need to deal with QIII and QIV of current year where no calendar product is available to calculate the spread over. To this end step 3. is modified as follows:   
+3a. Join to calendar time series on trade date and year(delivery quarter product) = year(delivery calendar product) + 1 and calculate spreads.   
+
+***
+   
+The below chart shows the historically observed quarter spreads for base load. Note that there is a distinct pattern when QI and QIV go up the other two go down and reverse.   
+```{r echo = FALSE}
+v.spreadCols <- c("Date", colnames(dt.priceData)[grepl("SpreadB", colnames(dt.priceData))])
+dt.spreads <- dt.priceData[, ..v.spreadCols]
+
+dt.spreadMelt <- data.table::melt(dt.spreads, id = 1)
+ggplot(dt.spreadMelt, aes(x = Date, y = value, color = variable))+
+  geom_line(show.legend = TRUE) +
+  ggtitle("Historical Spreads Quarter - Calendar, base load same delivery year") +
+  xlab("date") +
+  ylab("spreads, EUR / MWh")
+```
+Peak load reveals the same pattern at different levels.   
+
+```{r echo = FALSE}
+v.spreadCols <- c("Date", colnames(dt.priceData)[grepl("SpreadP", colnames(dt.priceData))])
+dt.spreads <- dt.priceData[, ..v.spreadCols]
+
+dt.spreadMelt <- data.table::melt(dt.spreads, id = 1)
+ggplot(dt.spreadMelt, aes(x = Date, y = value, color = variable))+
+  geom_line(show.legend = TRUE) +
+  ggtitle("Historical Spreads Quarter - Calendar, peak load same delivery year") +
+  xlab("date") +
+  ylab("spreads, EUR / MWh")
+```
+Now look at how quarter prices for QIII and QIV of current year relate to the price of the front calendar product, as we want use the front calendar product as reference for calculating the spreads of these quarters.   
+
+
+The following chart shows the dependancy between level of calendar price and quarter spreads. There is clearly some dependance.
+```{r echo = FALSE}
+v.baseCols <- c("Date", "DEBY1", colnames(dt.priceData)[grepl("SpreadB", colnames(dt.priceData))])
+dt.base <- dt.priceData[, ..v.baseCols]
+dt.baseMelt <- data.table::melt(dt.base, id = 1)
+ggplot(dt.baseMelt, aes(x = Date, y = value, color = variable))+
+  geom_line(show.legend = TRUE) +
+  ggtitle("Historical Quarterly spreads vs. calendar price level") +
+  xlab("date") +
+  ylab("spreads EUR / MWh")
+```
+Now we explore the distributional properties of the quarter spreads
+
+```{r echo = FALSE}
+
+v.baseCols <- c("Date", colnames(dt.priceData)[grepl("SpreadB", colnames(dt.priceData))])
+dt.base <- dt.priceData[, ..v.baseCols]
+dt.baseMelt <- data.table::melt(dt.base, id = 1)
+
+ggplot(dt.baseMelt , aes(x = value, fill = variable)) + 
+  geom_density(alpha=0.2, position="identity") + 
+  ggtitle("Density of historical quarter spreads") +
+  xlab("Spreads EUR / MWh") +
+  ylab("Density")
+```
+
+It is amost impossible to make something out of these distributions. They show lot of idyosincratic information is hidden in every of the spreads, the quarter grouping of the delivery months is obviously a non natural grouping,in addition there is more noise on this scale.
+We decide however to give it a go with our version of MMOU, with two regimes (states for HMM).
+```{r echo = FALSE}
+# let's load the results from test simulations
+
+v.baseCols <- c( colnames(dt.priceData)[grepl("SpreadB", colnames(dt.priceData))])
+m.prices <- as.matrix(dt.priceData[, ..v.baseCols])
+ names(m.prices) <- colnames(dt.priceData[, ..v.baseCols])
+idx <- which(v.names == "SpreadBQI")
+m.sim <- ar.sim[, , idx]
+# loop over spreads which we have calculated (one is always left out because of linear dependencies)
+l.g <- vector(mode= "list", length = length(v.baseCols))
+for (i in 1:length(v.baseCols)){
+  colName <- v.baseCols[i]
+  idx <- which(v.names==colName)
+  m.sim <- ar.sim[, , idx]
+  df.hist <- data.frame(sample =  c(m.prices[, eval(colName)], m.sim[simPathLength, ]), 
+                      label = c(rep(v.names[idx], sampleSize), 
+                                rep(paste("Sim", v.names[idx]), simIter))
+  )       
+  l.g[[i]] <- ggplot(df.hist , aes(x = sample, fill = label)) + 
+  geom_density(alpha=0.2, position="identity") 
+  l.g[[i]]            
+}
+
+# load the data for quarter III and IV of current year
+v.baseCols <- c( colnames(dt.priceData)[grepl("Spread0B", colnames(dt.priceData))])
+m.prices <- as.matrix(dt.priceData[, ..v.baseCols])
+l.g0 <- vector(mode= "list", length = length(v.baseCols))
+for (i in 1:length(v.baseCols)){
+  colName <- v.baseCols[i]
+  idx <- which(v.names==colName)
+  m.sim <- ar.sim[, , idx]
+  df.hist <- data.frame(sample =  c(m.prices[, eval(colName)], m.sim[simPathLength, ]), 
+                      label = c(rep(v.names[idx], sampleSize), 
+                                rep(paste("Sim", v.names[idx]), simIter))
+  )       
+  l.g0[[i]] <- ggplot(df.hist , aes(x = sample, fill = label)) + 
+  geom_density(alpha=0.2, position="identity") 
+              
+}
+l.g1<-c(l.g, l.g0)
+# plot them together
+
+do.call("grid.arrange", c(l.g1,
+                        ncol=2, nrow= ceiling(length(l.g1)/2), 
+                        top = "Histogram of simulated vs. historical quarter spreads, base load"))
+
+
+```
+Results for peak load:
+```{r echo = FALSE}
+# let's load the results from test simulations
+
+v.peakCols <- c( colnames(dt.priceData)[grepl("SpreadP", colnames(dt.priceData))])
+m.prices <- as.matrix(dt.priceData[, ..v.peakCols])
+ names(m.prices) <- colnames(dt.priceData[, ..v.peakCols])
+idx <- which(v.names == "SpreadPQI")
+m.sim <- ar.sim[, , idx]
+# loop over spreads which we have calculated (one is always left out because of linear dependencies)
+l.g <- vector(mode= "list", length = length(v.peakCols))
+for (i in 1:length(v.peakCols)){
+  colName <- v.peakCols[i]
+  idx <- which(v.names==colName)
+  m.sim <- ar.sim[, , idx]
+  df.hist <- data.frame(sample =  c(m.prices[, eval(colName)], m.sim[simPathLength, ]), 
+                      label = c(rep(v.names[idx], sampleSize), 
+                                rep(paste("Sim", v.names[idx]), simIter))
+  )       
+  l.g[[i]] <- ggplot(df.hist , aes(x = sample, fill = label)) + 
+  geom_density(alpha=0.2, position="identity") 
+  l.g[[i]]            
+}
+
+# load the data for quarter III and IV of current year
+v.peakCols <- c( colnames(dt.priceData)[grepl("Spread0P", colnames(dt.priceData))])
+m.prices <- as.matrix(dt.priceData[, ..v.peakCols])
+l.g0 <- vector(mode= "list", length = length(v.peakCols))
+for (i in 1:length(v.peakCols)){
+  colName <- v.peakCols[i]
+  idx <- which(v.names==colName)
+  m.sim <- ar.sim[, , idx]
+  df.hist <- data.frame(sample =  c(m.prices[, eval(colName)], m.sim[simPathLength, ]), 
+                      label = c(rep(v.names[idx], sampleSize), 
+                                rep(paste("Sim", v.names[idx]), simIter))
+  )       
+  l.g0[[i]] <- ggplot(df.hist , aes(x = sample, fill = label)) + 
+  geom_density(alpha=0.2, position="identity") 
+              
+}
+l.g1<-c(l.g, l.g0)
+# plot them together
+
+do.call("grid.arrange", c(l.g1,
+                        ncol=2, nrow= ceiling(length(l.g1)/2), 
+                        top = "Histogram of simulated vs. historical quarter spreads, peak load"))
+
+
+```
+
+The results are pretty decent.
+
+Now we look at the paths. First we plot one simulation path of all base load quarter spreads.   
+The pattern of the spreads: when first two quarters go up last two go down and reverse is somewhat preserved.   
+```{r echo = FALSE}
+cut <- 1
+idx1 <- which(v.names == "SpreadBQI")
+idx2 <- which(v.names == "SpreadBQII")
+idx3 <- which(v.names == "SpreadBQIII")
+idx4 <- which(v.names == "SpreadBQIV")
+simPathLength <- dim(ar.sim)[1]
+df.path <- data.frame(step = seq(1:simPathLength),
+                      sample =  c(ar.sim[,1:cut, idx1], 
+                                  ar.sim[,1:cut, idx2],
+                                  ar.sim[,1:cut, idx3],
+                                  ar.sim[,1:cut, idx4]), 
+                      label = c(rep(v.names[idx1], simPathLength), 
+                                rep(v.names[idx2], simPathLength),
+                                rep(v.names[idx3], simPathLength),
+                                rep(v.names[idx4], simPathLength))
+)
+
+ggplot(df.path, aes(x = step,y=sample, color = label))+
+  geom_line(show.legend = TRUE) +
+  ggtitle(" Simulation paths for quarter spreads \n except quarters in current year, base load") +
+  xlab("simulated time steps") +
+  ylab("Simulated price EUR/MWh")
+```
+Below is the plot of peak load.   
+```{r echo = FALSE}
+cut <- 1
+idx1 <- which(v.names == "SpreadPQI")
+idx2 <- which(v.names == "SpreadPQII")
+idx3 <- which(v.names == "SpreadPQIII")
+idx4 <- which(v.names == "SpreadPQIV")
+simPathLength <- dim(ar.sim)[1]
+df.path <- data.frame(step = seq(1:simPathLength),
+                      sample =  c(ar.sim[,1:cut, idx1], 
+                                  ar.sim[,1:cut, idx2],
+                                  ar.sim[,1:cut, idx3],
+                                  ar.sim[,1:cut, idx4]), 
+                      label = c(rep(v.names[idx1], simPathLength), 
+                                rep(v.names[idx2], simPathLength),
+                                rep(v.names[idx3], simPathLength),
+                                rep(v.names[idx4], simPathLength))
+)
+
+ggplot(df.path, aes(x = step,y=sample, color = label))+
+  geom_line(show.legend = TRUE) +
+  ggtitle(" Simulation paths for quarter spreads \n except quarters in current year, peak load") +
+  xlab("simulated time steps") +
+  ylab("Simulated price EUR/MWh")
+```
+Finally we plot simulated prices for front year, QIII of current year and spot, base load. These are representatives of all groups of products we simulate.  
+```{r echo = FALSE}
+cut <- 1
+idx1 <- which(v.names == "DEBY1")
+idx2 <- which(v.names == "Spread0BQIII")
+idx3 <- which(v.names == "DEBSpot")
+idx3 <- which(v.names == "SpreadBQI")
+
+simPathLength <- dim(ar.sim)[1]
+df.path <- data.frame(step = seq(1:simPathLength),
+                      sample =  c(ar.sim[,1:cut, idx1], 
+                                  ar.sim[,1:cut, idx2],
+                                  ar.sim[,1:cut, idx3],
+                                  ar.sim[,1:cut, idx4]), 
+                      label = c(rep(v.names[idx1], simPathLength), 
+                                rep(v.names[idx2], simPathLength),
+                                rep(v.names[idx3], simPathLength),
+                                rep(v.names[idx4], simPathLength))
+)
+
+ggplot(df.path, aes(x = step,y=sample, color = label))+
+  geom_line(show.legend = TRUE) +
+  ggtitle(" Simulation paths for selected products, base load") +
+  xlab("simulated time steps") +
+  ylab("Simulated price EUR/MWh")
+```
+
+# Technical Implementation
+1. Price History, sample data as csv available 
+2. R Code including this documentation in github
+3. Main wrapper StartPriceSimScript.R
+4. Output in 3D arrays in a number of chunks, saved under ./Output. 
+Dimensions: (simPathLength x simIter x d)
+         simPathLength: length of simulated path 
+                       (measured in the time units in which deltat is defined. E.g.:
+                       if we daily workdays timeseries in the data and we have delta t = 1
+                       simPathLength = 250 then we will simulate 250 working days)
+         simIter: number of simulations
+         d: number of products to simulate
+5. functions are intentionally dirty and save results instead of returning them
+in the script environment in order to not overload the memory as data structures are big.
+Chunking and parallelization are implemented.
+6. Complete description of the naming convention used for code creation is given under
+./R Naming Convention.pdf
+
+# Note to other models  
+Essentially what is described here is identical to AR HMM models. In R there is a package for calibrating those. In a formally correct calibration process the transition matrix of the HMM
+and the covariance matrix of the AR processes are inferred via Gibbs sampling procedure.
+It turns out that it is much less stable and results are much less plausible that the 
+euristic sequential approach presented here.
+
+
+**Reference**
+https://arxiv.org/pdf/1412.7952.pdf (Markov-modulated Ornstein-Uhlenbeck processes, G. Huang et al. 2014):
+
+

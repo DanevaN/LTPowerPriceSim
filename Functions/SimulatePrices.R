@@ -66,7 +66,7 @@ SimulatePrices <- function(outputPathHMM, outputPathSim, priceMappingPath,
   v.startPricesProvided <- v.startPrices
   
   # get data from calibrated HMMs (function CalibrateHMMPriceData)
-  load(outputPathHMM)
+  base::load(outputPathHMM)
   
   
   # if subset of the originally calibrated products needs to be simulated take subsets of all inputs

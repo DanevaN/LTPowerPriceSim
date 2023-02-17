@@ -14,7 +14,11 @@
 #####################################################################################
 ## Set up working directory to be the one from which the current script is started
 #####################################################################################
-
+# some packages are installed from binaries, for them RTools is needed
+# it is installed in the .bat file under C:\\Rtools.
+# We add the path to the binaries to our PATH variable so R can find 'make'
+Sys.setenv(PATH = paste0(Sys.getenv("PATH"), ";C:\\Rtools\\usr\\bin"))
+require(renv)
 # renv will take care to install all libraries in their correct versions
 ##### ATTENTION!!! When you first clone run this commande ONCE, choose 2. option
 # renv::init()
@@ -174,7 +178,6 @@ l.params <- list(currentFolder 	=	 currentFolder,
                  v.indicesQ 	=	v.indicesQ, 
                  v.indicesSpot 	=	 v.indicesSpot, 
                  v.simIter 	=	 v.simIter, 
-                 v.volInc 	=	 v.volInc,
                  valDateDt 	=	 valDateDt,
                  valDatePrevStr 	=	valDatePrevStr
                  
